@@ -9,6 +9,22 @@ from whisper.tokenizer import get_tokenizer
 
 @pytest.mark.parametrize("model_name", whisper.available_models())
 def test_transcribe(model_name: str):
+    """
+    Transcribe an audio file using a pre-trained model
+    
+    Args:
+        model_name (str): Name of the pre-trained model
+    
+    Returns:
+        None: Does not return anything, only runs assertions on the output
+    
+    Processing Logic:
+    1. Load the model based on model name
+    2. Transcribe the audio file
+    3. Check language, text and token outputs
+    4. Verify timing information for specific words
+    """
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = whisper.load_model(model_name).to(device)
     audio_path = os.path.join(os.path.dirname(__file__), "jfk.flac")

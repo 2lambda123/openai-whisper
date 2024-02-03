@@ -143,6 +143,19 @@ class Inference:
 
 class PyTorchInference(Inference):
     def __init__(self, model: "Whisper", initial_token_length: int):
+        """
+        Initialize a Whisper model with caching
+        Args:
+            model: Whisper - Whisper model to initialize
+            initial_token_length: int - Length of initial tokens to cache
+        Returns:
+            None - No return value
+        Processing Logic:
+            - Initialize model, initial token length and empty cache
+            - Extract key and value modules from decoder blocks
+            - Store modules in kv_modules for later caching
+        """
+        
         self.model: "Whisper" = model
         self.initial_token_length = initial_token_length
         self.kv_cache = {}
@@ -153,6 +166,19 @@ class PyTorchInference(Inference):
         self.kv_modules = key_modules + value_modules
 
     def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+        """
+        Calculates logits for tokens and audio features
+        Args:
+            tokens: Tensor of tokens
+            audio_features: Tensor of audio features
+        Returns:
+            Tensor: Logits for tokens
+        Processing Logic:
+            - Checks if key-value cache exists, installs hooks if not
+            - Takes last token if tokens length exceeds initial length
+            - Passes tokens and audio features through decoder with key-value cache
+        """
+        
         if not self.kv_cache:
             self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
 
@@ -163,6 +189,15 @@ class PyTorchInference(Inference):
         return self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
 
     def cleanup_caching(self):
+        """Cleans up cached data and hooks
+        Args:
+            self: The class instance
+        Returns:
+            None: Cleans up cached data and hooks
+        - Loops through each hook in self.hooks and calls remove() on it to clear any cached data
+        - Sets self.kv_cache to an empty dictionary to clear the key-value cache
+        - Resets self.hooks to an empty list to clear any registered hooks"""
+        
         for hook in self.hooks:
             hook.remove()
 
@@ -170,6 +205,16 @@ class PyTorchInference(Inference):
         self.hooks = []
 
     def rearrange_kv_cache(self, source_indices):
+        """Rearrange key-value cache based on source indices
+        Args:
+            source_indices: Indices of source sequences to select
+        Returns:
+            None: Rearranges key-value cache based on source indices
+        - Check if source indices are not a continuous range
+        - Iterate through key-value modules
+        - Select sequences from key-value cache using source indices and detach from computation graph
+        - Update key-value cache for the module"""
+        
         if source_indices != list(range(len(source_indices))):
             for module in self.kv_modules:
                 # update the key/value cache to contain the selected sequences
@@ -194,9 +239,32 @@ class MaximumLikelihoodRanker(SequenceRanker):
     """
 
     def __init__(self, length_penalty: Optional[float]):
+        """
+        Initialize a model with optional length penalty
+        Args:
+            length_penalty: Optional length penalty parameter
+        Returns:
+            None: Does not return anything
+        - Set the length penalty attribute from the input parameter
+        - If no length penalty is provided, set it to default value
+        """
+        
         self.length_penalty = length_penalty
 
     def rank(self, tokens: List[List[Tensor]], sum_logprobs: List[List[float]]):
+        """
+        Rank token sequences by log probability scores.
+        Args:
+            tokens: List of lists of Tensors representing sequences
+            sum_logprobs: List of lists of floats representing log probabilities of sequences
+        Returns:
+            indices: List of indices of highest scoring sequence for each batch
+        Processing Logic:
+            - Calculate log probability scores for each sequence by dividing log probability by length penalty
+            - Length penalty is calculated as (5+length)/6 ^ length_penalty
+            - Return index of highest scoring sequence for each batch
+        """
+        
         def scores(logprobs, lengths):
             result = []
             for logprob, length in zip(logprobs, lengths):
@@ -271,11 +339,40 @@ class TokenDecoder:
 
 class GreedyDecoder(TokenDecoder):
     def __init__(self, temperature: float, eot: int):
+        """
+        Initialize Temperature and End of Transmission objects
+        Args:
+            temperature: Temperature value in float
+            eot: End of Transmission value in int
+        Returns:
+            None: No value is returned
+        - Set instance variable temperature to the passed temperature parameter
+        - Set instance variable eot to the passed eot parameter
+        - No other processing is done, only initialization of instance variables"""
+        
         self.temperature = temperature
         self.eot = eot
 
     def update(
         self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
+        """
+        Updates the tokens and log probabilities during sampling.
+        Args:
+            tokens: Tensor of current tokens
+            logits: Tensor of logits from model
+            sum_logprobs: Running sum of log probabilities
+        Returns:
+            tokens: Updated tokens Tensor
+            completed: Whether sampling is complete
+        Processing Logic:
+            - Samples next tokens from logits based on temperature
+            - Calculates log probabilities of sampled tokens
+            - Adds to running sum of logprobs
+            - Sets tokens that reached EOT to EOT
+            - Concatenates sampled tokens to tokens Tensor
+            - Checks if all tokens reached EOT
+        """
+        
     ) -> Tuple[Tensor, bool]:
         if self.temperature == 0:
             next_tokens = logits.argmax(dim=-1)
@@ -293,6 +390,16 @@ class GreedyDecoder(TokenDecoder):
         return tokens, completed
 
     def finalize(self, tokens: Tensor, sum_logprobs: Tensor):
+        """Finalizes the beam search by adding EOT tokens.
+        Args:
+            tokens: Tensor of predicted tokens
+            sum_logprobs: Tensor of log probabilities summed over tokens
+        Returns:
+            tokens: Tensor with EOT tokens added
+            sum_logprobs: List of log probabilities
+        - Pad tokens with one extra column of EOT tokens
+        - Return original tokens and sum_logprobs converted to a list"""
+        
         # make sure each sequence has at least one EOT token at the end
         tokens = F.pad(tokens, (0, 1), value=self.eot)
         return tokens, sum_logprobs.tolist()
@@ -306,6 +413,22 @@ class BeamSearchDecoder(TokenDecoder):
         inference: Inference,
         patience: Optional[float] = None,
     ):
+        """
+        Initialize beam search decoder
+        Args:
+            beam_size: {Beam size for beam search decoding}
+            eot: {End of text token}
+            inference: {Inference object to generate predictions}
+            patience: {Early stopping patience (default 1.0)}
+        Returns:
+            None: {Does not return anything, initializes attributes}
+        Processing Logic:
+            - Sets beam size, EOT token, inference object and patience
+            - Calculates maximum number of candidates as beam size * patience
+            - Initializes finished sequences to None
+            - Asserts maximum candidates is greater than 0
+        """
+        
         self.beam_size = beam_size
         self.eot = eot
         self.inference = inference
@@ -318,10 +441,34 @@ class BeamSearchDecoder(TokenDecoder):
         ), f"Invalid beam size ({beam_size}) or patience ({patience})"
 
     def reset(self):
+        """Resets the finished sequences attribute
+        Args:
+            self: The class instance
+        Returns:
+            None: Resets the finished sequences attribute to None
+        - Sets the finished_sequences attribute to None to clear any previously finished sequences
+        - This allows the class to start tracking new sequences from a clean slate"""
+        
         self.finished_sequences = None
 
     def update(
         self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor
+        """
+        Updates beam search state
+        Args:
+            tokens: Tensor - Current partial sequences
+            logits: Tensor - Model logits for next tokens
+            sum_logprobs: Tensor - Running log probabilities for sequences
+        Returns:
+            tokens: Tensor - Next partial sequences
+            completed: bool - Whether search is complete
+        Processing Logic:
+        1. Calculate cumulative log probabilities for all possible next tokens for each partial sequence
+        2. Rank candidates and keep top beam_size sequences
+        3. Update tokens, log probabilities and finished sequences
+        4. Check if search is complete based on number of finished sequences
+        """
+        
     ) -> Tuple[Tensor, bool]:
         if tokens.shape[0] % self.beam_size != 0:
             raise ValueError(f"{tokens.shape}[0] % {self.beam_size} != 0")
@@ -382,6 +529,19 @@ class BeamSearchDecoder(TokenDecoder):
         return tokens, completed
 
     def finalize(self, preceding_tokens: Tensor, sum_logprobs: Tensor):
+        """
+        Finalizes beam search by collecting finished sequences.
+        Args:
+            preceding_tokens: {Tensor of previous tokens for each beam}
+            sum_logprobs: {Tensor of log probabilities for each beam}
+        Returns:
+            tokens, sum_logprobs: {Lists of finished sequences and their log probabilities}
+        - Collects finished sequences from self.finished_sequences
+        - Adds unfinished sequences based on highest log probabilities if not enough finished
+        - Converts sequences to tensors and log probabilities to floats
+        - Returns lists of finished sequence tensors and their log probabilities
+        """
+        
         # collect all finished sequences, including patience, and add unfinished ones if not enough
         sum_logprobs = sum_logprobs.cpu()
         for i, sequences in enumerate(self.finished_sequences):
@@ -422,19 +582,61 @@ class LogitFilter:
 
 class SuppressBlank(LogitFilter):
     def __init__(self, tokenizer: Tokenizer, sample_begin: int):
+        """
+        Initialize a sample with a tokenizer and beginning index
+        Args:
+            tokenizer: Tokenizer to tokenize text
+            sample_begin: Index of the beginning of the sample in the full text
+        Returns:
+            None: Does not return anything
+        - Store the passed in tokenizer for future tokenization
+        - Store the beginning index of the sample in the text
+        - No other processing is done, just stores the passed in values"""
+        
         self.tokenizer = tokenizer
         self.sample_begin = sample_begin
 
     def apply(self, logits: Tensor, tokens: Tensor):
+        """Applies constraints to the logits for the first token
+        Args:
+            logits: Tensor of shape (batch_size, num_tokens): Unnormalized logits for each token
+            tokens: Tensor of shape (batch_size, num_tokens): Already generated tokens
+        Returns:
+            logits: Tensor of shape (batch_size, num_tokens): Constrained logits
+        Processing Logic:
+            - Checks if the number of already generated tokens is equal to the begin token
+            - If equal, sets the logits for the begin token to -inf to prevent its selection
+            - This ensures the first token is always the begin token set during initialization"""
+        
         if tokens.shape[1] == self.sample_begin:
             logits[:, self.tokenizer.encode(" ") + [self.tokenizer.eot]] = -np.inf
 
 
 class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int]):
+        """
+        Initialize a suppressor with suppressed tokens
+        Args:
+            suppress_tokens: Sequence of tokens to suppress
+        Returns:
+            None: Does not return anything
+        - Create a list from the supplied sequence of suppress tokens
+        - Store the list of suppress tokens on the instance
+        - No return value as this is an initializer"""
+        
         self.suppress_tokens = list(suppress_tokens)
 
     def apply(self, logits: Tensor, tokens: Tensor):
+        """Applies suppression to specified tokens in logits
+        Args:
+            logits: Tensor of shape (batch_size, num_tokens): Logits to apply suppression to
+            tokens: Tensor of indices to suppress
+        Returns:
+            logits: Tensor of shape (batch_size, num_tokens): Logits with suppression applied
+        - Identifies tokens to suppress based on self.suppress_tokens
+        - Sets logits for identified tokens to -inf, effectively suppressing them in sampling
+        - Returns logits with suppression applied"""
+        
         logits[:, self.suppress_tokens] = -np.inf
 
 
@@ -445,11 +647,36 @@ class ApplyTimestampRules(LogitFilter):
         sample_begin: int,
         max_initial_timestamp_index: Optional[int],
     ):
+        """Initializes a sample from a tokenizer.
+        Args:
+            tokenizer: The tokenizer to use.
+            sample_begin: The index of the first token in the sample.
+            max_initial_timestamp_index: Optional index for max timestamp.
+        Returns:
+            None: Does not return anything.
+        - Sets the tokenizer attribute to the passed in tokenizer
+        - Sets the sample_begin attribute to the passed in sample_begin
+        - Sets the max_initial_timestamp_index attribute to the passed in max_initial_timestamp_index
+        """
+        
         self.tokenizer = tokenizer
         self.sample_begin = sample_begin
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
     def apply(self, logits: Tensor, tokens: Tensor):
+        """Applies constraints to logits during sampling to enforce timestamp rules
+        Args:
+            logits: Tensor - Logits from model
+            tokens: Tensor - Previously sampled tokens
+        Returns:
+            logits: Tensor - Logits with constraints applied
+        1. Masks logits to suppress <|notimestamps|> token
+        2. Masks logits to enforce timestamps appear in pairs or before EOT
+        3. Masks logits to enforce timestamps are non-decreasing
+        4. Masks logits to suppress non-timestamps at beginning or over max initial timestamp
+        5. Masks logits to always sample timestamp if their probability is highest
+        """
+        
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
             logits[:, self.tokenizer.no_timestamps] = -np.inf
@@ -512,6 +739,20 @@ class DecodingTask:
     logit_filters: List[LogitFilter]
 
     def __init__(self, model: "Whisper", options: DecodingOptions):
+        """
+        Initialize the decoder.
+        Args:
+            model: Whisper model object
+            options: Decoding options
+        Returns:
+            None
+        Processing Logic:
+            - Initialize decoder components like tokenizer, inference, sequence ranker and decoder
+            - Set number of groups, context length and sample length
+            - Get initial tokens like SOT, timestamps
+            - Apply filters to logits like suppressing blank, tokens, timestamps
+        """
+        
         self.model = model
 
         language = options.language or "en"

@@ -56,6 +56,23 @@ def median_filter(x: torch.Tensor, filter_width: int):
 
 @numba.jit(nopython=True)
 def backtrace(trace: np.ndarray):
+    """
+    Traces back through a 2D array in reverse order.
+    Args:
+        trace (np.ndarray): Array to trace back through
+    Returns:
+        result (np.ndarray): Coordinates traced in reverse order
+    Processing Logic:
+    - Starts at bottom right corner of trace array
+    - Appends current coordinate to result list
+    - Checks value at current coordinate to determine which direction to move
+        - 0: move up-left
+        - 1: move up
+        - 2: move left
+    - Continues moving and appending until reaches top-left corner
+    - Returns result with coordinates in reverse order
+    """
+    
     i = trace.shape[0] - 1
     j = trace.shape[1] - 1
     trace[0, :] = 2
@@ -81,6 +98,17 @@ def backtrace(trace: np.ndarray):
 
 @numba.jit(nopython=True, parallel=True)
 def dtw_cpu(x: np.ndarray):
+    """
+    Computes Dynamic Time Warping distance on CPU
+    Args:
+        x: {Numpy array}: {Input time series data}
+    Returns:
+        path: {List}: {Optimal warping path between input time series}
+    - Calculates cost matrix between input time series by recursively finding minimum cost between neighboring cells
+    - Stores traceback information in trace matrix to find optimal warping path
+    - Uses backtracking through trace matrix to return optimal warping path
+    """
+    
     N, M = x.shape
     cost = np.ones((N + 1, M + 1), dtype=np.float32) * np.inf
     trace = -np.ones((N + 1, M + 1), dtype=np.float32)
@@ -106,6 +134,16 @@ def dtw_cpu(x: np.ndarray):
 
 
 def dtw_cuda(x, BLOCK_SIZE=1024):
+    """
+    Computes Dynamic Time Warping distance using CUDA
+    Args:
+        x: Tensor of shape (M,N): Input time series
+        BLOCK_SIZE: Block size for CUDA kernel
+    Returns:
+        Distance: Scalar value of DTW distance between input time series
+    Computes DTW distance between input time series x using a CUDA kernel. Pads x to handle boundary conditions. Initializes cost and trace matrices on GPU. Calls CUDA kernel to recursively fill cost and trace matrices. Returns backtraced path from trace matrix to get DTW alignment.
+    """
+    
     from .triton_ops import dtw_kernel
 
     M, N = x.shape
@@ -143,6 +181,16 @@ def dtw(x: torch.Tensor) -> np.ndarray:
         try:
             return dtw_cuda(x)
         except (RuntimeError, subprocess.CalledProcessError):
+            """Computes the dynamic time warping between two sequences.
+            Args:
+                x: Input tensor sequence.
+            Returns:
+                np.ndarray: DTW distance matrix.
+            - Check if input tensor is on GPU
+            - Try calling CUDA accelerated DTW function
+            - If CUDA call fails, move tensor to CPU and call CPU DTW function
+            - Return DTW distance matrix"""
+            
             warnings.warn(
                 "Failed to launch Triton kernels, likely due to missing CUDA toolkit; "
                 "falling back to a slower DTW implementation..."
@@ -166,6 +214,25 @@ def find_alignment(
     text_tokens: List[int],
     mel: torch.Tensor,
     num_frames: int,
+    """
+    Finds alignment between text and mel spectrogram
+    Args:
+        model: Whisper model
+        tokenizer: Tokenizer
+        text_tokens: List of token ids
+        mel: Mel spectrogram tensor
+        num_frames: Number of frames in mel
+        medfilt_width: Median filter window width
+        qk_scale: Scaling factor for attention weights
+    Returns:
+        List of WordTiming: Alignment between words and mel frames
+    Processes Logic:
+    1. Runs forward pass through model to get token probabilities
+    2. Extracts attention weights from cross attention layers
+    3. Applies median filtering to attention weights
+    4. Calculates DTW alignment between tokens and frames
+    5. Splits tokens into words and finds start/end times"""
+    
     *,
     medfilt_width: int = 7,
     qk_scale: float = 1.0,
@@ -241,6 +308,19 @@ def find_alignment(
 
 
 def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: str):
+    """
+    Merges punctuation tokens to adjacent words.
+    Args:
+        alignment: List[WordTiming]: The word alignment to modify
+        prepended: str: Punctuation tokens to prepend
+        appended: str: Punctuation tokens to append
+    Returns:
+        None: Modifies alignment in-place
+    Processing Logic:
+    - Loops through alignment from end to start and merges prepended punctuation tokens
+    - Loops through alignment from start to end and merges appended punctuation tokens
+    """
+    
     # merge prepended punctuations
     i = len(alignment) - 2
     j = len(alignment) - 1
@@ -275,6 +355,30 @@ def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: st
 
 
 def add_word_timestamps(
+    """
+    Adds word timestamps to speech segments.
+    
+    Args:
+        segments: List[dict]: The speech segments to add word timestamps to.
+        model: "Whisper": The TTS model.
+        tokenizer: Tokenizer: The tokenizer.
+        mel: torch.Tensor: The mel spectrogram.
+        num_frames: int: The number of frames in the mel spectrogram.
+        prepend_punctuations: str: Punctuations to prepend to words.
+        append_punctuations: str: Punctuations to append to words.
+        last_speech_timestamp: float: Timestamp of last word in previous segment.
+    
+    Returns:
+        None: Modifies the segments list in-place.
+    
+    Processes Logic:
+    1. Finds alignment between text and mel using model.
+    2. Calculates word durations from alignment.
+    3. Truncates long words at sentence boundaries.
+    4. Merges punctuations with words.
+    5. Adds word timestamps to each segment, truncating long words at segment boundaries.
+    """
+    
     *,
     segments: List[dict],
     model: "Whisper",

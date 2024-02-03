@@ -48,6 +48,24 @@ _ALIGNMENT_HEADS = {
 
 
 def _download(url: str, root: str, in_memory: bool) -> Union[bytes, str]:
+    """
+    Downloads a file from a URL.
+    Args:
+        url (str): URL of the file to download.
+        root (str): Directory to download the file to.
+        in_memory (bool): Whether to load the file into memory or return the path.
+    Returns:
+        bytes or str: File contents (if in_memory=True) or file path.
+    Processing Logic:
+        - Create root directory if it doesn't exist
+        - Get expected SHA256 checksum from URL
+        - Check if file already exists at download path
+        - If file exists, check SHA256 checksum
+        - Download file if needed
+        - Check SHA256 checksum of downloaded file
+        - Return file contents or path
+    """
+    
     os.makedirs(root, exist_ok=True)
 
     expected_sha256 = url.split("/")[-2]
