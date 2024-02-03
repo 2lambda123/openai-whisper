@@ -33,7 +33,27 @@ class LayerNorm(nn.LayerNorm):
 
 
 class Linear(nn.Linear):
+        """Forward pass of the module.
+        Args:
+            x: Input tensor
+        Returns:
+            Tensor: Output tensor after processing
+        - Convert input tensor x to float
+        - Call forward method of parent class
+        - Convert output back to original data type of x
+        """
+        
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass of the module.
+        Args:
+            x: Input tensor of shape [batch_size, in_features].
+        Returns:
+            output: Output tensor of shape [batch_size, out_features].
+        Processing Logic:
+            - Applies a linear transformation: output = input * weight + bias (if provided)
+            - Weight and bias are learnable parameters
+            - Output has the same dtype as the input"""
+        
         return F.linear(
             x,
             self.weight.to(x.dtype),
@@ -44,6 +64,18 @@ class Linear(nn.Linear):
 class Conv1d(nn.Conv1d):
     def _conv_forward(
         self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
+        """Performs the forward pass of a convolution operator.
+        Args:
+            x: Input tensor of shape (N, C_in, H_in, W_in).
+            weight: Filter tensor of shape (C_out, C_in, H_filter, W_filter).
+            bias: Bias tensor of shape (C_out). Optional.
+        Returns:
+            Output: Output tensor of shape (N, C_out, H_out, W_out).
+        - Converts weight and bias tensors to the same data type as input if provided
+        - Calls the super class' convolution forward pass
+        - Returns the resulting output tensor
+        """
+        
     ) -> Tensor:
         return super()._conv_forward(
             x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
@@ -61,6 +93,18 @@ def sinusoids(length, channels, max_timescale=10000):
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_state: int, n_head: int):
+        """
+        Initialize the Transformer model
+        Args:
+            n_state: {Number of hidden units in each attention head}
+            n_head: {Number of attention heads}
+        Returns:
+            None: {Does not return anything, initializes model parameters}
+        - Initializes linear layers for query, key, value and output projections
+        - Sets number of attention heads
+        - Calls parent class initializer
+        """
+        
         super().__init__()
         self.n_head = n_head
         self.query = Linear(n_state, n_state)
@@ -75,6 +119,22 @@ class MultiHeadAttention(nn.Module):
         mask: Optional[Tensor] = None,
         kv_cache: Optional[dict] = None,
     ):
+        """
+        Performs multi-head attention.
+        Args:
+            x: {Tensor}: Input tensor
+            xa: {Optional[Tensor]}: Cross attention input tensor
+            mask: {Optional[Tensor]}: Mask tensor
+            kv_cache: {Optional[dict]}: Cache for key/value tensors
+        Returns:
+            wv: {Tensor}: Attention output
+            qk: {Tensor}: Attention weights
+        Processes Logic:
+            - Projects x and xa to queries, keys and values
+            - Calculates attention weights and output
+            - Optionally caches keys and values for cross attention
+        """
+        
         q = self.query(x)
 
         if kv_cache is None or xa is None or self.key not in kv_cache:
@@ -93,6 +153,26 @@ class MultiHeadAttention(nn.Module):
     def qkv_attention(
         self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
     ):
+        """
+        Calculates attention using a query, key, and value.
+        Args:
+            q: {Tensor of shape (n_batch, n_ctx, n_state)}
+            k: {Tensor of shape (n_batch, n_ctx, n_state)}
+            v: {Tensor of shape (n_batch, n_ctx, n_state)}
+            mask: {Optional tensor of shape (n_ctx, n_ctx) masking locations for attention}
+        Returns:
+            attn_output: {Tensor of shape (n_batch, n_ctx, n_state)}
+            attn_weights: {Tensor of shape (n_batch, n_head, n_ctx, n_ctx)}
+        Processing Logic:
+            - Scales q, k, v by (n_state//n_head)^-0.25
+            - Splits q, k, v into n_head pieces and permutes dimensions
+            - Computes q @ k to get attention weights
+            - Applies optional mask to attention weights
+            - Softmaxes attention weights
+            - Multiplies value v by attention weights
+            - Combines heads and returns output
+        """
+        
         n_batch, n_ctx, n_state = q.shape
         scale = (n_state // self.n_head) ** -0.25
         q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3) * scale
@@ -110,6 +190,23 @@ class MultiHeadAttention(nn.Module):
 
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, n_state: int, n_head: int, cross_attention: bool = False):
+        """
+        Initialize a Transformer block
+        Args:
+            n_state: {Number of hidden units in the Transformer block}
+            n_head: {Number of attention heads in the Transformer block}
+            cross_attention: {Whether to include cross attention or not}
+        Returns:
+            self: {The initialized Transformer block}
+        Processing Logic:
+            - Initialize self attention layer
+            - Initialize layer norm for self attention
+            - Initialize cross attention layer if cross_attention is True
+            - Initialize layer norm for cross attention
+            - Initialize MLP layer
+            - Initialize layer norm for MLP
+        """
+        
         super().__init__()
 
         self.attn = MultiHeadAttention(n_state, n_head)
@@ -133,6 +230,21 @@ class ResidualAttentionBlock(nn.Module):
         mask: Optional[Tensor] = None,
         kv_cache: Optional[dict] = None,
     ):
+        """
+        Applies attention and feed forward layers to input.
+        Args:
+            x: {Tensor containing input to the layer}
+            xa: {Optional tensor containing cross attention keys (for encoder-decoder attention)}
+            mask: {Optional mask to avoid performing attention on padding token indices}
+            kv_cache: {Optional dictionary for caching key-value states between attention calls}
+        Returns:
+            x: {Tensor containing the output of the layer}
+        Processing Logic:
+            - Adds output of self attention layer to input
+            - Optionally adds output of cross attention layer to input
+            - Adds output of feed forward layer to input
+        """
+        
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)[0]
         if self.cross_attn:
             x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)[0]
@@ -144,6 +256,24 @@ class AudioEncoder(nn.Module):
     def __init__(
         self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
     ):
+        """
+        Initialize the Transformer model.
+        Args:
+            n_mels: {Number of mel filterbanks}: Number of mel filterbanks to use for input features
+            n_ctx: {Context length}: Length of input sequence
+            n_state: {State dimension}: Dimension of hidden states
+            n_head: {Number of heads}: Number of attention heads
+            n_layer: {Number of layers}: Number of Transformer layers
+        Returns:
+            self: {Initialized Transformer model}: Returns the initialized Transformer model
+        Processing Logic:
+            - Apply 1D convolution to project mel spectogram to model dimension
+            - Apply 1D convolution with stride to downsample input
+            - Register positional embedding buffer
+            - Create list of ResidualAttentionBlock modules for each layer
+            - Add final LayerNorm
+        """
+        
         super().__init__()
         self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1)
         self.conv2 = Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1)
@@ -177,6 +307,23 @@ class TextDecoder(nn.Module):
     def __init__(
         self, n_vocab: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
     ):
+        """
+        Initializes the Transformer model.
+        Args:
+            n_vocab: {Number of vocabulary words}: {Number of unique words in the corpus}
+            n_ctx: {Number of context positions}: {Maximum number of tokens to consider left and right of the current token}
+            n_state: {Dimensionality of the model}: {Dimensionality of the embedding, encoder/decoder layers and attention heads}
+            n_head: {Number of attention heads}: {Number of attention heads for each attention layer in the Transformer}
+            n_layer: {Number of layers}: {Number of encoder/decoder layers}
+        Returns:
+            self: {Initialized Transformer model}: {Returns the initialized Transformer model}
+        {Processing Logic}:
+            - Initializes token and positional embeddings
+            - Defines ResidualAttentionBlock modules for each layer
+            - Adds LayerNorm module
+            - Defines causal attention mask
+        """
+        
         super().__init__()
 
         self.token_embedding = nn.Embedding(n_vocab, n_state)
@@ -220,6 +367,17 @@ class TextDecoder(nn.Module):
 
 class Whisper(nn.Module):
     def __init__(self, dims: ModelDimensions):
+        """
+        Initialize the model with encoder and decoder
+        Args:
+            dims: ModelDimensions - Model dimensions
+        Returns:
+            None
+        Initializes the encoder and decoder, registers alignment heads buffer:
+            - Initializes AudioEncoder and TextDecoder
+            - Registers alignment_heads buffer with last half decoder layers by default
+        """
+        
         super().__init__()
         self.dims = dims
         self.encoder = AudioEncoder(
@@ -245,6 +403,15 @@ class Whisper(nn.Module):
         self.register_buffer("alignment_heads", all_heads.to_sparse(), persistent=False)
 
     def set_alignment_heads(self, dump: bytes):
+        """Sets alignment heads from a compressed dump.
+        Args:
+            dump: Compressed dump of alignment heads
+        Returns:
+            None: Does not return anything
+        - Decompresses the dump into a NumPy array
+        - Converts the array into a PyTorch sparse tensor
+        - Registers the tensor as a buffer on the model"""
+        
         array = np.frombuffer(
             gzip.decompress(base64.b85decode(dump)), dtype=bool
         ).copy()
@@ -254,26 +421,90 @@ class Whisper(nn.Module):
         self.register_buffer("alignment_heads", mask.to_sparse(), persistent=False)
 
     def embed_audio(self, mel: torch.Tensor):
+        """Embeds audio mel spectrogram into latent space
+        Args:
+            mel: Mel spectrogram tensor
+        Returns:
+            embedding: Embedded audio latent vector
+        - Passes mel spectrogram through encoder network to embed into latent space
+        - Encoder is pretrained to map audio features to a continuous latent representation"""
+        
         return self.encoder(mel)
 
     def logits(self, tokens: torch.Tensor, audio_features: torch.Tensor):
+        """
+        Calculates logits from tokens and audio features
+        Args:
+            tokens: Input tokens tensor
+            audio_features: Audio features tensor
+        Returns:
+            logits: Logits tensor
+        - Passes tokens and audio features through decoder model
+        - Decoder model processes inputs and outputs logits
+        - Logits represent predicted next token probabilities
+        """
+        
         return self.decoder(tokens, audio_features)
 
     def forward(
         self, mel: torch.Tensor, tokens: torch.Tensor
+        """Forward pass through the model.
+        Args:
+            mel: Mel spectrogram input tensor
+            tokens: Tokenized text input tensor
+        Returns:
+            output: Dictionary of output tensors from the model
+        Processes input tensors through encoder and decoder:
+            - Passes mel input through encoder to get encoder outputs
+            - Passes tokens through decoder while attending to encoder outputs
+            - Returns dictionary of output tensors from the decoder"""
+        
     ) -> Dict[str, torch.Tensor]:
         return self.decoder(tokens, self.encoder(mel))
 
     @property
     def device(self):
+        """
+        Returns the device of the first parameter.
+        Args:
+            self: The object instance.
+        Returns:
+            device: The device of the first parameter.
+        - Get the first parameter using next(self.parameters())
+        - Return the device attribute of the parameter
+        """
+        
         return next(self.parameters()).device
 
     @property
     def is_multilingual(self):
+        """
+        Checks if the model is multilingual
+        Args:
+            self: The model object
+        Returns:
+            bool: True if the model has more than 51865 vocabularies, False otherwise
+        Checks the number of vocabularies in the model:
+        - Gets the number of vocabularies from the model's dims attribute
+        - Returns True if the number of vocabularies is greater than or equal to 51865
+        - Returns False otherwise
+        """
+        
         return self.dims.n_vocab >= 51865
 
     @property
     def num_languages(self):
+        """
+        Returns the number of languages in the model
+        Args:
+            self: The class instance
+        Returns:
+            num_languages: The number of languages in the model
+        - Subtracts the number of tokens for English vocabulary and a flag for multilingual from the total vocabulary size to get the number of additional languages
+        - The flag for multilingual is cast to an integer since it is a boolean
+        - English vocabulary size and the flag value are hardcoded constants
+        """
+        
         return self.dims.n_vocab - 51765 - int(self.is_multilingual)
 
     def install_kv_cache_hooks(self, cache: Optional[dict] = None):

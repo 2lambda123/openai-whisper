@@ -382,6 +382,19 @@ def transcribe(
 
 
 def cli():
+    """
+    Transcribe audio files
+    Args:
+        audio: {List of audio files to transcribe}
+    Returns:
+        result: {Transcription result}
+    {Processing Logic}:
+        - Load model and initialize writer
+        - Transcribe each audio file
+        - Write output to files
+        - Handle exceptions and skip failed files
+    """
+    
     from . import available_models
 
     def valid_model_name(name):
